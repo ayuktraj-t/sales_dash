@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VOYX - Sales & Analytics Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- Supabase JS CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+  <div class="dashboard-container">
+    
+    <!-- TOP HEADER -->
+    <header class="top-header">
+      <div class="brand-area">
+        <div class="brand-logo">
+          VOYX
+        </div>
+      </div>
+
+      <div class="header-center">
+        <!-- DATE PICKER FILTER -->
+        <div class="date-pill" style="display: flex; align-items: center; gap: 8px;">
+          <i data-lucide="calendar" style="width: 15px; height: 15px; color: var(--primary-orange);"></i>
+          <span style="font-size: 11px; font-weight: 700; color: #64748b;">DATE FILTER:</span>
+          <input type="date" id="reportDateInput" value="2026-05-17" onchange="onDateChange()" style="border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; outline: none; font-family: inherit; font-weight: 700; color: #0f172a; cursor: pointer; background: #ffffff;">
+        </div>
+
+        <nav class="nav-tabs">
+          <button class="tab-btn active" id="tabDashboardBtn" onclick="switchTab('dashboard')">
+            <i data-lucide="layout-dashboard" style="width: 14px; height: 14px;"></i>
+            Dashboard
+          </button>
+          <button class="tab-btn" id="tabWalletBtn" onclick="switchTab('wallet')">
+            <i data-lucide="wallet" style="width: 14px; height: 14px;"></i>
+            Wallet Summary
+          </button>
+        </nav>
+
+        <button class="btn-csv" onclick="downloadCSV()">
+          <i data-lucide="download" style="width: 14px; height: 14px;"></i>
+          Download CSV
+        </button>
+      </div>
+
+      <div class="header-right">
+        <div class="supabase-badge connected" id="connectionBadge">
+          <i data-lucide="database" style="width: 12px; height: 12px;"></i>
+          <span id="connectionBadgeText">Supabase RPC Live Connected</span>
+        </div>
+
+        <div class="user-profile">
+          <div class="user-name">Voyx Admin</div>
+          <a href="#" class="user-logout" onclick="alert('Logged out'); return false;">
+            Logout <i data-lucide="log-out" style="width: 10px; height: 10px;"></i>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN DASHBOARD VIEW -->
+    <main class="dashboard-view" id="dashboardView">
+
+      <!-- TOP STAT CARDS GRID -->
+      <section class="stats-grid">
+        
+        <!-- CARD 1: TODAY PERFORMANCE (Dark Theme) -->
+        <div class="stat-card dark-card">
+          <div class="stat-header">
+            <span class="stat-title">TODAY PERFORMANCE</span>
+          </div>
+          <div class="stat-main">
+            <span class="stat-value" id="todayOrders">--</span>
+            <span class="stat-unit">Orders</span>
+          </div>
+          <div class="stat-footer">
+            <strong id="todayRevenue">--</strong> Revenue
+          </div>
+        </div>
+
+        <!-- CARD 2: JUNE MTD / MONTH MTD -->
+        <div class="stat-card">
+          <div class="stat-header">
+            <span class="stat-title" id="mtdLabel">MONTH MTD</span>
+            <div class="stat-icon-badge">
+              <i data-lucide="bar-chart-2" style="width: 16px; height: 16px;"></i>
+            </div>
+          </div>
+          <div class="stat-main">
+            <span class="stat-value" id="mtdOrders">--</span>
+          </div>
+          <div class="stat-footer">
+            <strong id="mtdRevenue">--</strong> Revenue
+          </div>
+        </div>
+
+        <!-- CARD 3: PREV MONTH (SAME DAY) -->
+        <div class="stat-card">
+          <div class="stat-header">
+            <span class="stat-title">PREV MONTH (SAME DAY)</span>
+            <div class="stat-icon-badge">
+              <i data-lucide="history" style="width: 16px; height: 16px;"></i>
+            </div>
+          </div>
+          <div class="stat-main">
+            <span class="stat-value" id="prevSameDayOrders">--</span>
+          </div>
+          <div class="stat-footer">
+            <strong id="prevSameDayRevenue">--</strong> Revenue
+          </div>
+        </div>
+
+        <!-- CARD 4: PREV MONTH -->
+        <div class="stat-card">
+          <div class="stat-header">
+            <span class="stat-title">PREV MONTH</span>
+            <div class="stat-icon-badge">
+              <i data-lucide="file-text" style="width: 16px; height: 16px;"></i>
+            </div>
+          </div>
+          <div class="stat-main">
+            <span class="stat-value" id="prevMonthOrders">--</span>
+          </div>
+          <div class="stat-footer">
+            <strong id="prevMonthRevenue">--</strong> Revenue
+          </div>
+        </div>
+
+      </section>
+
+      <!-- MIDDLE SECTION (LEADERBOARD + TOP DESTINATIONS) -->
+      <section class="middle-grid">
+        
+        <!-- DAILY LEADERBOARD WITH SEARCH & SORT FILTERS -->
+        <div class="card-panel">
+          <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
+            <div class="panel-title">
+              <i data-lucide="list-ordered" style="width: 16px; height: 16px; color: var(--primary-orange);"></i>
+              DAILY LEADERBOARD
+            </div>
+
+            <!-- LEADERBOARD FILTERS CONTAINER -->
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <!-- SEARCH REP FILTER -->
+              <div style="position: relative;">
+                <input type="text" id="searchRep" placeholder="🔍 Search rep name..." style="padding: 6px 12px 6px 28px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 12px; width: 160px; outline: none;" oninput="filterLeaderboard()">
+                <i data-lucide="search" style="width: 12px; height: 12px; position: absolute; left: 10px; top: 10px; color: #94a3b8;"></i>
+              </div>
+
+              <!-- SORT FILTER DROPDOWN -->
+              <select id="sortLeaderboard" onchange="filterLeaderboard()" style="padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 12px; font-weight: 600; outline: none; background: #ffffff; cursor: pointer;">
+                <option value="mtd_sales_desc">Sort: MTD Sales (High to Low)</option>
+                <option value="mtd_rev_desc">Sort: MTD Revenue (High to Low)</option>
+                <option value="arpu_desc">Sort: ARPU (High to Low)</option>
+                <option value="tdy_sales_desc">Sort: Day Sales (High to Low)</option>
+                <option value="name_asc">Sort: Sales Rep Name (A-Z)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="table-wrapper">
+            <table class="leaderboard-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>SALES_R</th>
+                  <th>#DAY</th>
+                  <th>#MTD</th>
+                  <th>MTD REV</th>
+                  <th>ARPU</th>
+                  <th>TARGET</th>
+                  <th>#PV_MONTH</th>
+                </tr>
+              </thead>
+              <tbody id="leaderboardBody">
+                <tr>
+                  <td colspan="8" class="empty-state-box">Loading leaderboard from Supabase RPC...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- TOP DESTINATIONS (Dark Container) -->
+        <div class="card-panel dark-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <i data-lucide="globe" style="width: 16px; height: 16px; color: var(--primary-orange);"></i>
+              TOP DESTINATIONS
+            </div>
+          </div>
+
+          <div class="destinations-list" id="destinationsList">
+            <div class="empty-state-box" style="color: #94a3b8;">Loading destinations...</div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- BOTTOM SECTION (CHARTS) -->
+      <section class="bottom-grid">
+        
+        <!-- DAILY SUMMARY CHART -->
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <i data-lucide="line-chart" style="width: 16px; height: 16px; color: var(--primary-orange);"></i>
+              DAILY SUMMARY
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="dailySummaryChart"></canvas>
+          </div>
+        </div>
+
+        <!-- MONTHLY SUMMARY CHART -->
+        <div class="card-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <i data-lucide="trending-up" style="width: 16px; height: 16px; color: var(--primary-orange);"></i>
+              MONTHLY SUMMARY
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="monthlySummaryChart"></canvas>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+
+    <!-- WALLET SUMMARY VIEW -->
+    <main class="wallet-view" id="walletView">
+      <div class="card-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <i data-lucide="wallet" style="width: 16px; height: 16px; color: var(--primary-orange);"></i>
+            WALLET SUMMARY & PAYOUTS
+          </div>
+        </div>
+        <div class="stats-grid" style="grid-template-columns: 1fr 1fr 1fr; margin-bottom: 20px;">
+          <div class="stat-card">
+            <div class="stat-title">ACCOUNT BALANCE</div>
+            <div class="stat-value" id="walletBalance" style="font-size: 28px; color: var(--primary-orange);">₹2,48,950.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">PENDING PAYOUTS</div>
+            <div class="stat-value" id="walletPending" style="font-size: 28px;">₹32,450.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">TOTAL WITHDRAWN</div>
+            <div class="stat-value" id="walletWithdrawn" style="font-size: 28px;">₹18,50,000.00</div>
+          </div>
+        </div>
+        <div class="table-wrapper">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>TRANSACTION ID</th>
+                <th>DATE</th>
+                <th>TYPE</th>
+                <th>AMOUNT</th>
+                <th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>#TXN-98421</td>
+                <td>18 Jun 2026</td>
+                <td>Payout Settlement</td>
+                <td>₹45,200.00</td>
+                <td><span style="color: #10b981; font-weight: 700;">Completed</span></td>
+              </tr>
+              <tr>
+                <td>#TXN-98420</td>
+                <td>15 Jun 2026</td>
+                <td>Sales Commission</td>
+                <td>₹1,24,000.00</td>
+                <td><span style="color: #10b981; font-weight: 700;">Completed</span></td>
+              </tr>
+              <tr>
+                <td>#TXN-98419</td>
+                <td>01 Jun 2026</td>
+                <td>Monthly Payout</td>
+                <td>₹1,85,000.00</td>
+                <td><span style="color: #10b981; font-weight: 700;">Completed</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- LOAD CONFIG & JS MODULES -->
+  <script src="config.js"></script>
+  <script src="supabaseClient.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
