@@ -1,11 +1,96 @@
 -- ============================================================
--- VOYX DASHBOARD - COMPLETE SUPABASE DATABASE SETUP SCRIPT
+-- VOYX DASHBOARD - COMPLETE SUPABASE DATABASE SETUP SCRIPT (v2)
 -- Copy & Run this script in your Supabase SQL Editor:
 -- https://supabase.com/dashboard/project/pcenxwfhavneypapwbxi/sql/new
+--
+-- CHANGE FROM v1: added the `sales_dash` schema with `orders` and
+-- `users` tables, because get_sales_dashboard() queries
+-- sales_dash.orders / sales_dash.users, not the public.* tables.
+-- The public.* tables below are left in place in case other parts
+-- of the dashboard read from them directly, but the RPC function
+-- now has real source tables to query.
 -- ============================================================
 
 -- Enable UUID extension just in case
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- ============================================================
+-- SCHEMA: sales_dash  (source tables used by get_sales_dashboard)
+-- ============================================================
+CREATE SCHEMA IF NOT EXISTS sales_dash;
+
+-- ------------------------------------------------------------
+-- sales_dash.users
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sales_dash.users (
+    user_id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE sales_dash.users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public select users" ON sales_dash.users;
+CREATE POLICY "Allow public select users" ON sales_dash.users FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert users" ON sales_dash.users;
+CREATE POLICY "Allow public insert users" ON sales_dash.users FOR INSERT WITH CHECK (true);
+
+INSERT INTO sales_dash.users (name) VALUES
+('Faizan'),
+('Talha'),
+('Bhageshri'),
+('Nidhi'),
+('Sanika'),
+('Prabhat'),
+('Farooq')
+ON CONFLICT DO NOTHING;
+
+-- ------------------------------------------------------------
+-- sales_dash.orders
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sales_dash.orders (
+    order_id SERIAL PRIMARY KEY,
+    order_date_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    amount NUMERIC(10,2) NOT NULL,
+    discount_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+    created_by INT NOT NULL REFERENCES sales_dash.users(user_id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE sales_dash.orders ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public select orders" ON sales_dash.orders;
+CREATE POLICY "Allow public select orders" ON sales_dash.orders FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert orders" ON sales_dash.orders;
+CREATE POLICY "Allow public insert orders" ON sales_dash.orders FOR INSERT WITH CHECK (true);
+
+-- Seed ~4 months of sample orders (Feb 2026 - May 2026) spread
+-- across reps, so MTD / prev-month / prev-month-same-day filters
+-- in the function all have data to return when report_date is
+-- e.g. '2026-05-17'.
+INSERT INTO sales_dash.orders (order_date_time, amount, discount_amount, created_by)
+SELECT
+    ts,
+    round((random() * 400 + 50)::numeric, 2)               AS amount,
+    round((random() * 20)::numeric, 2)                     AS discount_amount,
+    (SELECT user_id FROM sales_dash.users ORDER BY random() LIMIT 1) AS created_by
+FROM generate_series(
+    TIMESTAMP '2026-02-01 09:00:00',
+    TIMESTAMP '2026-05-17 18:00:00',
+    interval '6 hours'
+) AS ts;
+
+-- ------------------------------------------------------------
+-- Grant schema usage to the API roles (required so PostgREST /
+-- the RPC function can read sales_dash tables at all)
+-- ------------------------------------------------------------
+GRANT USAGE ON SCHEMA sales_dash TO anon, authenticated, service_role;
+GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA sales_dash TO anon, authenticated, service_role;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA sales_dash TO anon, authenticated, service_role;
+
+
+-- ============================================================
+-- SCHEMA: public  (unchanged from v1 - kept for any widgets that
+-- read directly from these summary tables)
+-- ============================================================
 
 -- ------------------------------------------------------------
 -- 1. TODAY PERFORMANCE TABLE
@@ -192,5 +277,84 @@ CREATE POLICY "Allow public insert wallet_summary" ON public.wallet_summary FOR 
 INSERT INTO public.wallet_summary (account_balance, pending_payouts, total_withdrawn) VALUES
 (248950.00, 32450.00, 1850000.00);
 
--- Notify schema reload
+
+-- ============================================================
+-- FUNCTION: get_sales_dashboard(report_date date)
+-- NOTE: parameter is `report_date`, not `report_data`.
+-- Update your frontend .rpc() call to use this exact key name.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.get_sales_dashboard(report_date date)
+RETURNS TABLE (
+    daily_matrix json,
+    month_matrix json,
+    kpi_matrix json,
+    leaderboard_matrix json
+)
+LANGUAGE plpgsql
+AS $$
+begin
+return query
+with base as(
+  select u.name as sales_rep,
+   o.order_date_time::date as order_date,
+   (o.amount - o.discount_amount) as revenue
+  from sales_dash.orders as o join sales_dash.users as u
+  on o.created_by = u.user_id
+  where o.order_date_time between date_trunc('month', report_date - interval '1 month')
+  and report_date
+),
+daily_summary as(
+  select order_date, count(*) as no_of_sales,
+   sum(revenue) as total_revenue
+  from base
+  where order_date >= date_trunc('month', report_date)
+  group by 1
+  order by 1
+),
+month_summary as (
+  select extract(year from order_date_time) as year,
+   extract(month from order_date_time) as month,
+   count(*) as no_of_sales
+  from sales_dash.orders
+  group by 1,2
+  order by 1,2
+),
+kpi_matrix as(
+  select
+  count(*) filter(where order_date = report_date) as today_sales,
+  sum(revenue) filter(where order_date = report_date) as today_revenue,
+  count(*) filter(where order_date >= date_trunc('month', report_date)) as mtd_sales,
+  sum(revenue) filter(where order_date >= date_trunc('month', report_date)) as mtd_revenue,
+  count(*) filter(where order_date >= date_trunc('month', report_date - interval '1 month')::date) as prev_mon_same_day_sales,
+  sum(revenue) filter(where order_date >= date_trunc('month', report_date - interval '1 month')::date) as prev_mon_same_day_revenue,
+  count(*) filter(where order_date < date_trunc('month', report_date)) as prev_mon_sales,
+  sum(revenue) filter(where order_date < date_trunc('month', report_date)) as prev_mon_revenue
+  from base
+),
+leaderboard as(
+  select ms.sales_rep, mtd_sales, mtd_revenue, td_sales, td_revenue
+  from
+  (select sales_rep, count(*) as mtd_sales, sum(revenue) as mtd_revenue
+  from base where order_date >= date_trunc('month', report_date)
+  group by 1) as ms
+  left join
+  (select sales_rep, count(*) as td_sales, sum(revenue) as td_revenue
+  from base where order_date = report_date
+  group by 1) as ts
+  on ts.sales_rep = ms.sales_rep
+  order by ms.mtd_sales desc
+)
+select
+(select json_agg(to_jsonb(d)) from daily_summary d) as daily_matrix,
+(select json_agg(to_jsonb(m)) from month_summary m) as month_matrix,
+(select json_agg(to_jsonb(k)) from kpi_matrix k) as kpi_matrix,
+(select json_agg(to_jsonb(l)) from leaderboard l) as leaderboard_matrix;
+end;
+$$;
+
+-- Expose the function to the API roles
+GRANT EXECUTE ON FUNCTION public.get_sales_dashboard(date) TO anon, authenticated, service_role;
+
+-- Refresh PostgREST's schema cache so the new/updated function
+-- is picked up immediately instead of waiting for the next auto-scan
 NOTIFY pgrst, 'reload schema';
